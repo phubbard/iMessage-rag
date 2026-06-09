@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Family Chat Search</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Family Chat Search</h1>
+    <nav class="tabs">
+      <button id="tab-search" class="tab active">Search</button>
+      <button id="tab-ask" class="tab">Ask</button>
+    </nav>
+  </header>
+
+  <!-- SEARCH MODE -->
+  <main id="mode-search">
+    <form id="search-form">
+      <input id="q" type="search" placeholder="Search the whole history…" autocomplete="off" autofocus>
+      <div class="filters">
+        <label>From <input id="from" type="date"></label>
+        <label>To <input id="to" type="date"></label>
+        <label>Sender
+          <select id="sender"><option value="">Anyone</option></select>
+        </label>
+      </div>
+    </form>
+    <div id="status" class="status"></div>
+    <ul id="results"></ul>
+  </main>
+
+  <!-- ASK MODE (RAG) -->
+  <main id="mode-ask" hidden>
+    <form id="ask-form">
+      <input id="question" type="text" placeholder="Ask a question about the chat… (e.g. what did we decide about the Thanksgiving trip?)" autocomplete="off">
+      <button type="submit">Ask</button>
+    </form>
+    <div id="answer" class="answer"></div>
+    <div id="citations" class="citations"></div>
+  </main>
+
+  <!-- context drawer -->
+  <div id="drawer" class="drawer" hidden>
+    <div class="drawer-head">
+      <span id="drawer-title">Conversation</span>
+      <button id="drawer-close">✕</button>
+    </div>
+    <div id="drawer-body"></div>
+  </div>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

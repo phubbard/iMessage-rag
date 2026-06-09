@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Runs the indexer in watch mode: incrementally pulls new messages from chat.db
+  into index.db on a timer. The executable (or launchd's context) needs Full Disk
+  Access to read ~/Library/Messages/chat.db.
+
+  Install (per-user LaunchAgent):
+    cp launchd/net.phfactor.imessage-indexer.plist ~/Library/LaunchAgents/
+    # edit paths below to match your checkout, then:
+    launchctl load -w ~/Library/LaunchAgents/net.phfactor.imessage-indexer.plist
+  Grant Full Disk Access to the indexer binary in System Settings → Privacy & Security.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>net.phfactor.imessage-indexer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/pfh/code/imessage-rag/.build/release/indexer</string>
+        <string>--watch</string>
+        <string>300</string>
+        <string>--embed</string>
+        <string>--previews</string>
+        <string>--images</string>
+        <string>--config</string>
+        <string>/Users/pfh/code/imessage-rag/config.json</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/pfh/code/imessage-rag</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/pfh/.imessage-rag/indexer.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/pfh/.imessage-rag/indexer.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

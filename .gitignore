@@ -1,0 +1,10 @@
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+# local index + snapshots (rebuildable from chat.db)
+index.db
+index.db-*
+*.snapshot
+# the live config may carry the LAN password
+config.local.json

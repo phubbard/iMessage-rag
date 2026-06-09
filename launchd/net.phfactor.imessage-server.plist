@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Runs the web server (search + RAG). Reads index.db only; needs network access
+  to LM Studio on localhost. Does NOT need Full Disk Access.
+
+  Install (per-user LaunchAgent):
+    cp launchd/net.phfactor.imessage-server.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/net.phfactor.imessage-server.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>net.phfactor.imessage-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/pfh/code/imessage-rag/.build/release/server</string>
+        <string>--config</string>
+        <string>/Users/pfh/code/imessage-rag/config.json</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/pfh/code/imessage-rag</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/pfh/.imessage-rag/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/pfh/.imessage-rag/server.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

@@ -1,0 +1,23 @@
+{
+  "targetChatID": 5,
+  "chatDBPath": "~/Library/Messages/chat.db",
+  "indexDBPath": "~/.imessage-rag/index.db",
+
+  "lmStudioBaseURL": "http://localhost:1234/v1",
+  "embedModel": "text-embedding-bge-m3",
+  "embedDim": 1024,
+  "genModel": "openai/gpt-oss-120b",
+
+  "firecrawlBaseURL": "http://web.phfactor.net:3002",
+
+
+
+  "bindHost": "0.0.0.0",
+  "bindPort": 8765,
+  "authUser": "family",
+  "authPassword": "CHANGE-ME-before-exposing-on-LAN",
+
+  "handles": {
+    "me": "Me"
+  }
+}
