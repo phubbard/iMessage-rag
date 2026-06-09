@@ -12,6 +12,7 @@
     <nav class="tabs">
       <button id="tab-search" class="tab active">Search</button>
       <button id="tab-ask" class="tab">Ask</button>
+      <button id="tab-browse" class="tab">Browse</button>
     </nav>
   </header>
 
@@ -27,6 +28,7 @@
         </label>
       </div>
     </form>
+    <button id="search-new" class="pill" hidden>↻ New messages — update results</button>
     <div id="status" class="status"></div>
     <ul id="results"></ul>
   </main>
@@ -41,6 +43,15 @@
     <div id="citations" class="citations"></div>
   </main>
 
+  <!-- BROWSE MODE (read the thread) -->
+  <main id="mode-browse" hidden>
+    <div id="browse-status" class="status">Loading conversation…</div>
+    <div class="thread-wrap">
+      <div id="thread" class="thread"></div>
+      <button id="browse-new" class="pill pill-float" hidden>↓ New messages</button>
+    </div>
+  </main>
+
   <!-- context drawer -->
   <div id="drawer" class="drawer" hidden>
     <div class="drawer-head">
@@ -50,6 +61,8 @@
     <div id="drawer-body"></div>
   </div>
   <div id="scrim" class="scrim" hidden></div>
+
+  <footer id="footer" class="footer"></footer>
 
   <script src="app.js"></script>
 </body>

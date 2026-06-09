@@ -100,9 +100,27 @@ Incremental updates (new messages → search, embeddings, previews, image tags/O
 .build/release/indexer --embed    # incremental embeddings
 .build/release/indexer --previews # new URL previews
 .build/release/indexer --images   # new/now-downloaded images (Vision tags + OCR)
-# all-in-one watch loop (poll every 5 min, do everything):
+# all-in-one watch loop (event-driven + backstop poll, does everything):
 .build/release/indexer --watch 300 --embed --previews --images
 ```
+
+### Live updates
+
+`--watch` is **event-driven**: a `DispatchSource` watches `chat.db-wal` and runs an
+incremental pass within seconds of a new message (debounced; the numeric interval
+is a safety-net backstop, not the primary trigger). Each pass runs the full
+pipeline (messages → images → embeddings → previews) and stamps `last_indexed_at`.
+
+The **server** is decoupled: a background task polls its own `index.db` every ~10s
+and, on any change, pushes a Server-Sent Event to connected browsers
+(`GET /api/events`, with a 25s heartbeat). The web UI opens an `EventSource` and:
+- updates the footer stats live,
+- shows a "↻ New messages" pill in Search (click to refresh results),
+- live-appends to the Browse thread (or shows a "↓ New messages" pill if you've
+  scrolled up).
+
+No WebSocket and no IPC between processes — the indexer only touches `chat.db`, the
+server only reads `index.db`.
 
 ### Link previews & Firecrawl
 
@@ -156,6 +174,9 @@ All endpoints sit behind HTTP Basic auth.
 - `GET /api/search?q=&from=&to=&sender=&limit=` — FTS5 bm25 ranked, `<mark>`-highlighted snippets.
 - `GET /api/context/:id?window=` — messages surrounding a hit.
 - `GET /api/senders` — distinct senders (filter list).
+- `GET /api/stats` — ambient counts + freshness (powers the footer).
+- `GET /api/thread?before=&after=&limit=` — a page of the conversation for the Browse tab.
+- `GET /api/events` — Server-Sent Events stream of live index updates.
 - `GET /api/image/:attachmentID?thumb=1` — JPEG thumbnail of an image attachment
   (404 if offloaded). Path-restricted to the Messages Attachments dir.
 - `POST /api/ask` — `{ "question": "...", "from": <unix?>, "to": <unix?> }` → SSE

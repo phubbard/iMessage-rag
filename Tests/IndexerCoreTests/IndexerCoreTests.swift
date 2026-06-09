@@ -167,6 +167,37 @@ final class IndexerCoreTests: XCTestCase {
                       "OCR was: \(analysis?.ocr ?? "nil")")
     }
 
+    func testChatDBWatcherDebounce() throws {
+        // Watch a temp file (no -wal sibling → watcher falls back to the file itself).
+        let path = NSTemporaryDirectory() + "watch-\(UUID().uuidString).db"
+        FileManager.default.createFile(atPath: path, contents: Data("x".utf8))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        final class Counter: @unchecked Sendable {
+            private let lock = NSLock(); private var n = 0
+            func bump() { lock.lock(); n += 1; lock.unlock() }
+            var value: Int { lock.lock(); defer { lock.unlock() }; return n }
+        }
+        let counter = Counter()
+        let fired = expectation(description: "watcher fired")
+        fired.assertForOverFulfill = false
+
+        let watcher = ChatDBWatcher(chatDBPath: path, debounce: 0.4) {
+            counter.bump(); fired.fulfill()
+        }
+        watcher.start()
+        Thread.sleep(forTimeInterval: 0.4)   // let it arm
+
+        guard let fh = FileHandle(forWritingAtPath: path) else { throw XCTSkip("no fh") }
+        for _ in 0..<6 { fh.seekToEndOfFile(); fh.write(Data("y".utf8)) }   // rapid burst
+        try? fh.close()
+
+        wait(for: [fired], timeout: 5)
+        Thread.sleep(forTimeInterval: 0.7)   // allow any (incorrect) extra fires to land
+        watcher.stop()
+        XCTAssertEqual(counter.value, 1, "rapid writes should debounce to a single callback")
+    }
+
     func testConfigDefaultsAndOverrides() throws {
         let json = """
         { "targetChatID": 5, "authPassword": "s3cret" }

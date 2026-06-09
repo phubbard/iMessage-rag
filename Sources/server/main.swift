@@ -28,6 +28,7 @@ catch {
     exit(1)
 }
 let ask = AskService(config: config, search: search)
+let broadcaster = UpdateBroadcaster()
 
 // --- helpers ---------------------------------------------------------------
 
@@ -80,6 +81,19 @@ router.get("/api/senders") { _, _ -> Response in
     json(try await search.senders())
 }
 
+// GET /api/stats  → ambient counts + freshness for the footer
+router.get("/api/stats") { _, _ -> Response in
+    json(try await search.stats())
+}
+
+// GET /api/thread?before=&limit=  → a page of the conversation for browsing
+router.get("/api/thread") { request, _ -> Response in
+    let limit = min(max(request.queryInt("limit") ?? 60, 1), 200)
+    let before = request.queryInt("before").map { Int64($0) }
+    let after = request.queryInt("after").map { Int64($0) }
+    return json(try await search.thread(before: before, after: after, limit: limit))
+}
+
 // GET /api/context/:id?window=
 router.get("/api/context/:id") { request, context -> Response in
     guard let idStr = context.parameters.get("id"), let id = Int64(idStr) else {
@@ -117,6 +131,27 @@ router.get("/api/image/:id") { request, context -> Response in
         body: .init(byteBuffer: ByteBuffer(bytes: data)))
 }
 
+// GET /api/events  → Server-Sent Events stream of live index updates
+router.get("/api/events") { _, _ -> Response in
+    let (id, stream) = await broadcaster.subscribe()
+    let body = ResponseBody { writer in
+        try? await writer.write(ByteBuffer(string: ": connected\n\n"))
+        for await frame in stream {
+            do { try await writer.write(ByteBuffer(string: frame)) }
+            catch { break }   // client disconnected
+        }
+        await broadcaster.remove(id)
+    }
+    return Response(
+        status: .ok,
+        headers: [
+            .contentType: "text/event-stream; charset=utf-8",
+            .cacheControl: "no-cache",
+            .init("X-Accel-Buffering")!: "no"
+        ],
+        body: body)
+}
+
 // GET /api/health
 router.get("/api/health") { _, _ -> Response in
     json(["status": "ok"])
@@ -141,4 +176,27 @@ let app = Application(
 
 print("imessage-rag server on http://\(config.bindHost):\(config.bindPort)  (chat \(config.targetChatID))")
 print("serving UI from \(publicDir)")
+
+// Change poller: watch index.db for new data and push SSE updates to browsers.
+// Decoupled from the indexer process — just reads our own index every 10s.
+let changePoller = Task {
+    var last: (Double?, Int64)? = nil
+    while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 10 * 1_000_000_000)
+        guard let s = try? await search.stats() else { continue }
+        let cur = (s.lastIndexedAt, s.latestMessageID)
+        if let prev = last, prev == cur { continue }
+        if last != nil { await broadcaster.broadcast(sseFrame(UpdateEvent(stats: s))) }
+        last = cur   // first read establishes the baseline (no spurious broadcast)
+    }
+}
+// Heartbeat: keep SSE connections alive and detect dead clients.
+let heartbeat = Task {
+    while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 25 * 1_000_000_000)
+        await broadcaster.broadcast(": ping\n\n")
+    }
+}
+defer { changePoller.cancel(); heartbeat.cancel() }
+
 try await app.runService()

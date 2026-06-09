@@ -40,6 +40,7 @@ public final class Indexer {
         }
 
         if maxSeen > store.lastIndexedRowID { try store.setLastIndexedRowID(maxSeen) }
+        try store.setMeta("last_indexed_at", String(Date().timeIntervalSince1970))
         return Result(added: added, watermark: maxSeen, total: store.messageCount)
     }
 }

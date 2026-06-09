@@ -24,12 +24,13 @@ function dayEnd(v) { return v ? Date.parse(v + "T23:59:59") / 1000 : null; }
 
 $("#tab-search").onclick = () => switchMode("search");
 $("#tab-ask").onclick = () => switchMode("ask");
+$("#tab-browse").onclick = () => switchMode("browse");
 function switchMode(mode) {
-  const s = mode === "search";
-  $("#tab-search").classList.toggle("active", s);
-  $("#tab-ask").classList.toggle("active", !s);
-  $("#mode-search").hidden = !s;
-  $("#mode-ask").hidden = s;
+  for (const m of ["search", "ask", "browse"]) {
+    $("#tab-" + m).classList.toggle("active", m === mode);
+    $("#mode-" + m).hidden = m !== mode;
+  }
+  if (mode === "browse" && !threadLoaded) loadThreadInitial();
 }
 
 // --- search ----------------------------------------------------------------
@@ -240,4 +241,127 @@ function renderCitations(items) {
     d.onclick = () => openContext(c.centerID || c.startID);
     cites.appendChild(d);
   });
+}
+
+// --- browse the thread -----------------------------------------------------
+
+let threadLoaded = false, oldestId = null, loadingOlder = false, noMoreOlder = false;
+const threadEl = $("#thread");
+
+async function loadThreadInitial() {
+  try {
+    const r = await fetch("/api/thread?limit=60");
+    const data = await r.json();
+    threadEl.innerHTML = "";
+    for (const m of data.messages) threadEl.appendChild(renderBubble(m));
+    if (data.messages.length) {
+      oldestId = data.messages[0].id;
+      newestLoadedId = data.messages[data.messages.length - 1].id;
+    }
+    threadLoaded = true;
+    $("#browse-status").textContent = "";
+    threadEl.scrollTop = threadEl.scrollHeight;        // jump to most recent
+    threadEl.addEventListener("scroll", onThreadScroll);
+  } catch (err) {
+    $("#browse-status").textContent = "Error: " + err.message;
+  }
+}
+
+function onThreadScroll() {
+  if (threadEl.scrollTop < 120) loadOlder();
+}
+
+async function loadOlder() {
+  if (loadingOlder || noMoreOlder || oldestId == null) return;
+  loadingOlder = true;
+  const prevHeight = threadEl.scrollHeight;
+  try {
+    const r = await fetch(`/api/thread?before=${oldestId}&limit=60`);
+    const data = await r.json();
+    if (!data.messages.length) { noMoreOlder = true; return; }
+    const frag = document.createDocumentFragment();
+    for (const m of data.messages) frag.appendChild(renderBubble(m));
+    threadEl.insertBefore(frag, threadEl.firstChild);
+    oldestId = data.messages[0].id;
+    threadEl.scrollTop = threadEl.scrollHeight - prevHeight;   // keep view anchored
+  } catch (_) {} finally { loadingOlder = false; }
+}
+
+// --- ambient footer stats --------------------------------------------------
+
+function relTime(unix) {
+  if (!unix) return "never";
+  const s = Math.max(0, Date.now() / 1000 - unix);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+}
+function nf(n) { return (n || 0).toLocaleString(); }
+
+function renderFooter(d) {
+  $("#footer").textContent = [
+    `${nf(d.messages)} messages`,
+    `${nf(d.chunks)} chunks`,
+    `${nf(d.linkPreviews)} links`,
+    `${nf(d.taggedImages)} tagged photos`,
+    `updated ${relTime(d.lastIndexedAt)}`
+  ].join("  ·  ");
+}
+async function loadStats() {
+  try {
+    const r = await fetch("/api/stats");
+    if (r.ok) { const d = await r.json(); renderFooter(d); newestId = d.latestMessageID || newestId; }
+  } catch (_) {}
+}
+loadStats();
+setInterval(loadStats, 60000);   // fallback if the live stream drops
+
+// --- live updates (SSE) ----------------------------------------------------
+
+let newestId = 0;          // newest message id the server knows about
+let newestLoadedId = 0;    // newest id currently rendered in Browse
+
+function connectEvents() {
+  const es = new EventSource("/api/events");   // browser carries Basic-auth creds; auto-reconnects
+  es.onmessage = (e) => {
+    let ev; try { ev = JSON.parse(e.data); } catch (_) { return; }
+    if (ev.type === "update" && ev.stats) onUpdate(ev.stats);
+  };
+}
+connectEvents();
+
+function onUpdate(stats) {
+  renderFooter(stats);
+  const id = stats.latestMessageID || 0;
+  const grew = id > newestId;
+  newestId = id;
+  if (!grew) return;
+
+  // Browse: pull in the new messages.
+  if (threadLoaded && newestLoadedId && id > newestLoadedId) appendNewThread();
+
+  // Search: if results are showing, offer to refresh (don't disrupt the current view).
+  if (!$("#mode-search").hidden && $("#results").children.length) {
+    $("#search-new").hidden = false;
+  }
+}
+
+$("#search-new").onclick = () => { $("#search-new").hidden = true; runSearch(); };
+$("#browse-new").onclick = () => {
+  threadEl.scrollTop = threadEl.scrollHeight;
+  $("#browse-new").hidden = true;
+};
+
+async function appendNewThread() {
+  const atBottom = threadEl.scrollTop + threadEl.clientHeight >= threadEl.scrollHeight - 50;
+  try {
+    const r = await fetch(`/api/thread?after=${newestLoadedId}&limit=100`);
+    const data = await r.json();
+    if (!data.messages.length) return;
+    for (const m of data.messages) threadEl.appendChild(renderBubble(m));
+    newestLoadedId = data.messages[data.messages.length - 1].id;
+    if (atBottom) threadEl.scrollTop = threadEl.scrollHeight;   // follow the conversation
+    else $("#browse-new").hidden = false;                       // nudge to jump down
+  } catch (_) {}
 }

@@ -70,41 +70,58 @@ do {
     let indexer = Indexer(config: config)
 
     if flag("--watch") {
-        let interval = TimeInterval(arg("--watch").flatMap { Double($0) } ?? 60)
+        let interval = TimeInterval(arg("--watch").flatMap { Double($0) } ?? 300)
         let alsoEmbed = flag("--embed")
         let alsoPreviews = flag("--previews")
         let alsoImages = flag("--images")
         let extras = [alsoEmbed ? "embeddings" : nil, alsoPreviews ? "previews" : nil,
                       alsoImages ? "images" : nil].compactMap { $0 }
-        stamp("watch mode: polling every \(Int(interval))s\(extras.isEmpty ? "" : " (with \(extras.joined(separator: " + ")))"). Ctrl-C to stop.")
+        let extrasNote = extras.isEmpty ? "" : " + " + extras.joined(separator: " + ")
+        stamp("watch mode: event-driven on chat.db (backstop poll \(Int(interval))s)\(extrasNote). Ctrl-C to stop.")
         let embedder = EmbeddingIndexer(config: config)
         let previewer = PreviewIndexer(config: config)
         let imager = ImageIndexer(config: config)
-        // First pass: full if the index is empty, else incremental.
+
+        // Ticks come from the chat.db watcher (debounced) and a backstop timer;
+        // bufferingNewest(1) coalesces a burst into a single pending cycle. We prime
+        // one tick so the first iteration is the initial pass.
+        let (ticks, cont) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let watcher = ChatDBWatcher(chatDBPath: config.chatDBPath, debounce: 3) { cont.yield(()) }
+        watcher.start()
+        let backstop = Task {
+            while true {
+                try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                cont.yield(())
+            }
+        }
+        defer { backstop.cancel(); watcher.stop() }
+
+        cont.yield(())          // prime the initial pass
         var firstPass = true
-        while true {
-            let store = try? IndexStore(path: config.indexDBPath, embedDim: config.embedDim)
-            let needFull = firstPass && (store?.messageCount ?? 0) == 0
-            let r = try indexer.indexMessages(full: needFull, log: { _ in })
-            if r.added > 0 || firstPass {
-                stamp("indexed +\(r.added) (total \(r.total), watermark \(r.watermark))")
+        for await _ in ticks {
+            do {
+                let store = try? IndexStore(path: config.indexDBPath, embedDim: config.embedDim)
+                let needFull = firstPass && (store?.messageCount ?? 0) == 0
+                let r = try indexer.indexMessages(full: needFull, log: { _ in })
+                if r.added > 0 || firstPass {
+                    stamp("indexed +\(r.added) (total \(r.total), watermark \(r.watermark))")
+                }
+                if alsoImages {
+                    let im = try await imager.run(full: false, log: { _ in })
+                    if im.ok > 0 { stamp("images +\(im.ok) ok (\(im.missing) offloaded, total ok \(im.okTotal))") }
+                }
+                if alsoEmbed && (r.added > 0 || firstPass) {
+                    let e = try await embedder.run(full: needFull, log: { _ in })
+                    if e.chunksAdded > 0 { stamp("embedded +\(e.chunksAdded) chunks (total \(e.totalChunks))") }
+                }
+                if alsoPreviews && (r.added > 0 || firstPass) {
+                    let p = try await previewer.run(full: false, log: { _ in })
+                    if p.fetched > 0 { stamp("previews +\(p.fetched) fetched (total \(p.total))") }
+                }
+                firstPass = false
+            } catch {
+                stamp("cycle error: \(error)")   // keep watching despite a transient error
             }
-            // Images run every cycle (offloaded files may have downloaded), before
-            // embeddings so new media_text is available to the chunker.
-            if alsoImages {
-                let im = try await imager.run(full: false, log: { _ in })
-                if im.ok > 0 { stamp("images +\(im.ok) ok (\(im.missing) offloaded, total ok \(im.okTotal))") }
-            }
-            if alsoEmbed && (r.added > 0 || firstPass) {
-                let e = try await embedder.run(full: needFull, log: { _ in })
-                if e.chunksAdded > 0 { stamp("embedded +\(e.chunksAdded) chunks (total \(e.totalChunks))") }
-            }
-            if alsoPreviews && (r.added > 0 || firstPass) {
-                let p = try await previewer.run(full: false, log: { _ in })
-                if p.fetched > 0 { stamp("previews +\(p.fetched) fetched (total \(p.total))") }
-            }
-            firstPass = false
-            try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
         }
     }
 

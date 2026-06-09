@@ -49,6 +49,16 @@ public struct SendersResponse: Codable, Sendable {
     public let senders: [SenderInfo]
 }
 
+public struct StatsResponse: Codable, Sendable {
+    public let messages: Int64
+    public let chunks: Int64
+    public let taggedImages: Int64
+    public let linkPreviews: Int64
+    public let lastIndexedAt: Double?     // unix seconds of last indexer run
+    public let latestMessageTs: Double?   // unix seconds of newest message
+    public let latestMessageID: Int64     // ROWID of newest message (live-update cursor)
+}
+
 /// A conversational chunk retrieved for RAG, with its fused relevance score.
 public struct RetrievedChunk: Codable, Sendable {
     public let id: Int64
@@ -224,38 +234,92 @@ public actor SearchService {
         return out
     }
 
-    public func context(id: Int64, window: Int) throws -> ContextResponse {
-        struct Row { let id: Int64; let ts: Double; let sender: String; let senderName: String?
-                     let isFromMe: Bool; let body: String?; let hasMedia: Bool }
-        func rows(_ sql: String, _ bindCenter: Int64, _ limit: Int) throws -> [Row] {
-            let s = try db.prepare(sql)
-            defer { s.finalize() }
-            s.bind(1, Int64(chatID)).bind(2, bindCenter).bind(3, Int64(limit))
-            var out: [Row] = []
-            while try s.step() {
-                out.append(Row(id: s.int(0), ts: s.double(1), sender: s.text(2) ?? "?",
-                               senderName: s.text(3), isFromMe: s.int(4) == 1,
-                               body: s.text(5), hasMedia: s.int(6) == 1))
-            }
-            return out
+    private typealias MsgRow = (id: Int64, ts: Double, sender: String, senderName: String?,
+                                isFromMe: Bool, body: String?, hasMedia: Bool)
+    private static let msgCols = "id, ts_unix, sender, sender_name, is_from_me, body, has_media"
+
+    private func readRows(_ stmt: Statement) throws -> [MsgRow] {
+        defer { stmt.finalize() }
+        var out: [MsgRow] = []
+        while try stmt.step() {
+            out.append((id: stmt.int(0), ts: stmt.double(1), sender: stmt.text(2) ?? "?",
+                        senderName: stmt.text(3), isFromMe: stmt.int(4) == 1,
+                        body: stmt.text(5), hasMedia: stmt.int(6) == 1))
         }
-        let cols = "id, ts_unix, sender, sender_name, is_from_me, body, has_media"
-        let before = try rows(
-            "SELECT \(cols) FROM messages WHERE chat_id=? AND id <= ? ORDER BY id DESC LIMIT ?",
-            id, window + 1).reversed()
-        let after = try rows(
-            "SELECT \(cols) FROM messages WHERE chat_id=? AND id > ? ORDER BY id ASC LIMIT ?",
-            id, window)
-        let all = Array(before) + after
-        let previews = try linkPreviews(forBodies: all.compactMap { $0.body })
-        let imagesByMsg = try imagesForMessages(all.map { $0.id })
-        let messages = all.map { r in
+        return out
+    }
+
+    /// Turn rows into ContextMessages with link previews + image info attached.
+    private func assemble(_ rows: [MsgRow], hitID: Int64?) throws -> [ContextMessage] {
+        let previews = try linkPreviews(forBodies: rows.compactMap { $0.body })
+        let imagesByMsg = try imagesForMessages(rows.map { $0.id })
+        return rows.map { r in
             ContextMessage(id: r.id, ts: r.ts, sender: r.sender, senderName: r.senderName,
                            isFromMe: r.isFromMe, body: r.body, hasMedia: r.hasMedia,
-                           isHit: r.id == id, links: links(in: r.body ?? "", from: previews),
+                           isHit: hitID != nil && r.id == hitID,
+                           links: links(in: r.body ?? "", from: previews),
                            images: imagesByMsg[r.id] ?? [])
         }
-        return ContextResponse(centerID: id, messages: messages)
+    }
+
+    public func context(id: Int64, window: Int) throws -> ContextResponse {
+        let before = try readRows(db.prepare(
+            "SELECT \(Self.msgCols) FROM messages WHERE chat_id=? AND id <= ? ORDER BY id DESC LIMIT ?")
+            .bind(1, Int64(chatID)).bind(2, id).bind(3, Int64(window + 1))).reversed()
+        let after = try readRows(db.prepare(
+            "SELECT \(Self.msgCols) FROM messages WHERE chat_id=? AND id > ? ORDER BY id ASC LIMIT ?")
+            .bind(1, Int64(chatID)).bind(2, id).bind(3, Int64(window)))
+        return ContextResponse(centerID: id, messages: try assemble(Array(before) + after, hitID: id))
+    }
+
+    /// A page of the thread for browsing, in ascending id order:
+    /// - `after`  → messages with id > after (for live-appending new messages)
+    /// - `before` → messages with id < before (for loading older history)
+    /// - neither  → the latest page.
+    public func thread(before: Int64?, after: Int64?, limit: Int) throws -> ContextResponse {
+        let cap = Int64(min(max(limit, 1), 200))
+        let rows: [MsgRow]
+        if let after {
+            // Already ascending — no reverse needed.
+            rows = try readRows(db.prepare(
+                "SELECT \(Self.msgCols) FROM messages WHERE chat_id=? AND id > ? ORDER BY id ASC LIMIT ?")
+                .bind(1, Int64(chatID)).bind(2, after).bind(3, cap))
+        } else {
+            let stmt: Statement
+            if let before {
+                stmt = try db.prepare("SELECT \(Self.msgCols) FROM messages WHERE chat_id=? AND id < ? ORDER BY id DESC LIMIT ?")
+                    .bind(1, Int64(chatID)).bind(2, before).bind(3, cap)
+            } else {
+                stmt = try db.prepare("SELECT \(Self.msgCols) FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT ?")
+                    .bind(1, Int64(chatID)).bind(2, cap)
+            }
+            rows = Array(try readRows(stmt).reversed())
+        }
+        return ContextResponse(centerID: 0, messages: try assemble(rows, hitID: nil))
+    }
+
+    public func stats() throws -> StatsResponse {
+        func count(_ sql: String) -> Int64 { (try? db.scalarInt(sql)) ?? 0 }
+        func scalarDouble(_ sql: String) -> Double? {
+            guard let s = try? db.prepare(sql) else { return nil }
+            defer { s.finalize() }
+            return ((try? s.step()) == true && !s.isNull(0)) ? s.double(0) : nil
+        }
+        return StatsResponse(
+            messages: count("SELECT COUNT(*) FROM messages WHERE chat_id=\(chatID)"),
+            chunks: count("SELECT COUNT(*) FROM chunks"),
+            taggedImages: count("SELECT COUNT(*) FROM image_meta WHERE status='ok'"),
+            linkPreviews: count("SELECT COUNT(*) FROM link_previews WHERE status='ok' AND (title IS NOT NULL OR description IS NOT NULL)"),
+            lastIndexedAt: try? getMetaDouble("last_indexed_at"),
+            latestMessageTs: scalarDouble("SELECT MAX(ts_unix) FROM messages WHERE chat_id=\(chatID)"),
+            latestMessageID: count("SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=\(chatID)"))
+    }
+
+    private func getMetaDouble(_ key: String) throws -> Double? {
+        let s = try db.prepare("SELECT value FROM meta WHERE key=?")
+        defer { s.finalize() }
+        s.bind(1, key)
+        return try s.step() ? s.text(0).flatMap(Double.init) : nil
     }
 
     // MARK: - Link preview attachment
