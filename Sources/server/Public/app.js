@@ -327,6 +327,7 @@ function connectEvents() {
   es.onmessage = (e) => {
     let ev; try { ev = JSON.parse(e.data); } catch (_) { return; }
     if (ev.type === "update" && ev.stats) onUpdate(ev.stats);
+    else if (ev.type === "config") location.reload();   // server config changed → hot-reload page
   };
 }
 connectEvents();

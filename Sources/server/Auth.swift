@@ -7,13 +7,13 @@ import NIOCore
 /// history, so even on the LAN we require credentials. Bind to a LAN interface,
 /// never expose to the internet (PLAN §12).
 struct BasicAuthMiddleware<Context: RequestContext>: RouterMiddleware {
-    let user: String
-    let password: String
+    let store: ConfigStore   // read live so a config reload changes credentials without a restart
 
     func handle(_ request: Request, context: Context,
                 next: (Request, Context) async throws -> Response) async throws -> Response {
-        if let provided = Self.credentials(request), constantTimeEqual(provided.0, user),
-           constantTimeEqual(provided.1, password) {
+        let creds = await store.credentials
+        if let provided = Self.credentials(request), constantTimeEqual(provided.0, creds.user),
+           constantTimeEqual(provided.1, creds.password) {
             return try await next(request, context)
         }
         return Response(

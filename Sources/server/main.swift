@@ -27,7 +27,8 @@ catch {
     FileHandle.standardError.write(Data("run the indexer first: indexer --full\n".utf8))
     exit(1)
 }
-let ask = AskService(config: config, search: search)
+let configStore = ConfigStore(path: arg("--config"), initial: config)
+let ask = AskService(store: configStore, search: search)
 let broadcaster = UpdateBroadcaster()
 
 // --- helpers ---------------------------------------------------------------
@@ -59,7 +60,7 @@ extension Request {
 
 let router = Router()
 router.add(middleware: LogRequestsMiddleware(.info))
-router.add(middleware: BasicAuthMiddleware(user: config.authUser, password: config.authPassword))
+router.add(middleware: BasicAuthMiddleware(store: configStore))
 
 // GET /api/search?q=&from=&to=&sender=&limit=
 router.get("/api/search") { request, _ -> Response in
@@ -197,6 +198,27 @@ let heartbeat = Task {
         await broadcaster.broadcast(": ping\n\n")
     }
 }
-defer { changePoller.cancel(); heartbeat.cancel() }
+
+// Hot-reload: watch config.json + config.local.json; on change reload the live
+// config and tell browsers to refresh. Auth + Ask pick up new values immediately;
+// bind address / chat id / db paths still need a restart.
+let cfgArg = arg("--config") ?? "config.json"
+let cfgExpanded = (cfgArg as NSString).expandingTildeInPath
+let cfgAbs = cfgExpanded.hasPrefix("/") ? cfgExpanded
+    : FileManager.default.currentDirectoryPath + "/" + cfgExpanded
+let cfgDir = (cfgAbs as NSString).deletingLastPathComponent
+let configWatchers = [cfgAbs, cfgDir + "/config.local.json"].map { p in
+    FileWatcher(path: p, debounce: 0.5) {
+        Task {
+            if await configStore.reload() {
+                print("config reloaded (\((p as NSString).lastPathComponent) changed)")
+                await broadcaster.broadcast("data: {\"type\":\"config\"}\n\n")
+            }
+        }
+    }
+}
+configWatchers.forEach { $0.start() }
+
+defer { changePoller.cancel(); heartbeat.cancel(); configWatchers.forEach { $0.stop() } }
 
 try await app.runService()

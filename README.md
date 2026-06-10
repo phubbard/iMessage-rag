@@ -122,6 +122,14 @@ and, on any change, pushes a Server-Sent Event to connected browsers
 No WebSocket and no IPC between processes — the indexer only touches `chat.db`, the
 server only reads `index.db`.
 
+### Config hot-reload
+
+The server watches `config.json` and `config.local.json` (FileWatcher / DispatchSource)
+and reloads on change — no restart needed. Hot-applied immediately: **auth credentials**
+and the LM Studio / model settings used by `/api/ask`. On reload the server also pushes a
+`{"type":"config"}` SSE event so open browsers refresh. Settings bound at startup still need
+a restart: `bindHost`/`bindPort`, `targetChatID`, and the db paths.
+
 ### Link previews & Firecrawl
 
 `--previews` fetches OpenGraph/title metadata for shared URLs. Each URL is tried

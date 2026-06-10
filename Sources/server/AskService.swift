@@ -8,11 +8,11 @@ import IndexerCore
 /// gpt-oss-120b → stream tokens to the browser as SSE, then emit citations
 /// that deep-link back into the thread. See PLAN §8.
 struct AskService: Sendable {
-    let config: Config
+    let store: ConfigStore   // read live so config reloads apply without a restart
     let search: SearchService
 
-    init(config: Config, search: SearchService) {
-        self.config = config
+    init(store: ConfigStore, search: SearchService) {
+        self.store = store
         self.search = search
     }
 
@@ -28,7 +28,7 @@ struct AskService: Sendable {
         let chunks = question.isEmpty ? [] :
             try await search.retrieveChunks(query: question, k: 8, from: req.from, to: req.to)
 
-        let cfg = config
+        let cfg = await store.current
         let body = ResponseBody { writer in
             func emit(_ json: String) async throws {
                 try await writer.write(ByteBuffer(string: "data: \(json)\n\n"))
